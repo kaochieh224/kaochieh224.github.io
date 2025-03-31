@@ -3,48 +3,28 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>簡易恐龍遊戲</title>
+    <title>3D 地獄跑酷 - 極致光效</title> <!-- Updated Title -->
+
+    <!-- Deployment notes remain the same -->
+    <!--
+        遊戲部署說明：... (omitted for brevity) ...
+        本地測試提醒：... (omitted for brevity) ...
+    -->
+
     <style>
-        body {
-            margin: 0;
-            overflow: hidden; /* 防止滾動 */
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            min-height: 100vh;
-            background-color: #f7f7f7;
-            font-family: 'Courier New', Courier, monospace; /* 像素風格字體 */
-        }
-        #game-container {
-            position: relative;
-            width: 600px;
-            height: 200px;
-            border-bottom: 2px solid #535353; /* 地面線 */
-            overflow: hidden; /* 隱藏超出邊界的障礙物 */
-            background-color: #f7f7f7;
-            touch-action: manipulation; /* 禁用雙擊縮放等觸控手勢 */
-        }
-        #dino {
-            position: absolute;
-            bottom: 0;
-            left: 50px;
-            width: 40px;
-            height: 40px;
-            background-color: #535353; /* 恐龍顏色 */
-        }
-        .obstacle {
-            position: absolute;
-            bottom: 0;
-            width: 20px;
-            /* 高度會在 JS 中設定 */
-            background-color: #535353; /* 障礙物顏色 */
-        }
-        #score {
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        canvas { display: block; }
+        #info-overlay {
             position: absolute;
             top: 10px;
-            right: 10px;
+            left: 10px;
+            color: #FFA500; /* Orange text */
+            font-family: 'Courier New', Courier, monospace;
             font-size: 18px;
-            color: #535353;
+            background-color: rgba(0, 0, 0, 0.6);
+            padding: 5px 10px;
+            border-radius: 5px;
+            z-index: 10;
         }
         #game-over {
             position: absolute;
@@ -52,247 +32,415 @@
             left: 50%;
             transform: translate(-50%, -50%);
             font-size: 24px;
-            color: #535353;
-            display: none; /* 初始隱藏 */
+            color: #FF4500; /* Fiery text */
+            background-color: rgba(0, 0, 0, 0.8);
+            border: 1px solid #FF4500;
+            padding: 20px;
+            border-radius: 10px;
+            display: none;
             text-align: center;
-            white-space: nowrap; /* 防止文字換行 */
+            white-space: nowrap;
+            z-index: 10;
         }
+        body, #info-overlay, #game-over {
+            user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;
+        }
+         canvas { touch-action: manipulation; }
     </style>
 </head>
 <body>
-    <div id="game-container">
-        <div id="dino"></div>
+    <div id="info-overlay">
         <div id="score">分數: 0</div>
-        <div id="game-over">遊戲結束<br><small>(按空白鍵或點擊重新開始)</small></div>
-        <!-- 障礙物會動態添加到這裡 -->
     </div>
+    <div id="game-over">遊戲結束<br><small>(按空白鍵或點擊重新開始)</small></div>
 
-    <script>
-        const gameContainer = document.getElementById('game-container');
-        const dino = document.getElementById('dino');
+    <!-- Three.js Import Map - Added Postprocessing -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <!-- Game Logic -->
+    <script type="module">
+        import * as THREE from 'three';
+        // Import Postprocessing Modules
+        import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+        import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+
+        // --- Core Variables ---
+        let scene, camera, renderer, composer; // Added composer
+        let player, ground, playerLight; // Added playerLight
+        let obstacles = [];
+        let fireParticles;
+        let score = 0;
+        let animationFrameId = null;
+
+        // --- Game Parameters ---
+        const speedMultiplier = 0.05;
+        let initialGameSpeed = 0.1 * speedMultiplier;
+        let maxGameSpeed = 0.3 * speedMultiplier;
+        let gameSpeedAcceleration = 0.0001 * speedMultiplier;
+        let gameSpeed = initialGameSpeed;
+
+        const playerSize = 1;
+        let playerVelocityY = 0;
+        const gravity = 0.012;
+        const jumpStrength = 0.5;
+        let isJumping = false;
+        const playerXPosition = -5;
+
+        let isGameOver = true;
+        let gameRunning = false;
+
+        let intervalMultiplier = 2.5;
+        let obstacleTimer = 0;
+        let minObstacleInterval = 60;
+        let maxObstacleInterval = 150;
+        const obstacleSpawnZ = 35;
+        const obstacleEndZ = -15;
+
+        // Particle parameters
+        const particleCount = 5000; // Kept moderate, increase if needed
+        const particleSpread = { x: 40, y: 20, z: 60 };
+        const particleBaseY = -5;
+        const particleRiseSpeed = 0.05;
+
+        // Bloom parameters (TUNE THESE)
+        const bloomParams = {
+            threshold: 0.15, // Lower = more glow. Start low for hellfire.
+            strength: 1.8,  // Glow intensity.
+            radius: 0.6     // Glow radius/blur.
+        };
+
+        // --- DOM Elements ---
         const scoreDisplay = document.getElementById('score');
         const gameOverDisplay = document.getElementById('game-over');
 
-        // 遊戲變數
-        let dinoY = 0;
-        let dinoVelocityY = 0;
-        const gravity = 0.8;
-        const jumpStrength = 15;
-        let isJumping = false;
-        let isGameOver = false;
+        // --- Init Scene ---
+        function init() {
+            scene = new THREE.Scene();
+            // --- Brighter Background and Fog ---
+            scene.background = new THREE.Color(0x601000); // Dark fiery orange
+            scene.fog = new THREE.Fog(0xcc4400, 12, 40); // Brighter orange fog
 
-        let obstacles = [];
-        let score = 0;
-        let gameSpeed = 5;
-        let obstacleTimer = 0;
-        let minObstacleInterval = 50; // 最小間隔 (幀)
-        let maxObstacleInterval = 120; // 最大間隔 (幀)
+            const aspect = window.innerWidth / window.innerHeight;
+            camera = new THREE.PerspectiveCamera(60, aspect, 0.1, 100);
+            camera.position.set(playerXPosition + 3, 5, 10);
+            camera.lookAt(playerXPosition, 0, 0);
 
-        const gameWidth = gameContainer.offsetWidth;
-        const gameHeight = gameContainer.offsetHeight; // 雖然沒直接用，但定義一下
-        const dinoHeight = dino.offsetHeight;
+            renderer = new THREE.WebGLRenderer({ antialias: true }); // Max quality AA
+            renderer.setSize(window.innerWidth, window.innerHeight);
+             // --- Max Quality: Full Pixel Ratio ---
+            renderer.setPixelRatio(window.devicePixelRatio || 1);
+            renderer.shadowMap.enabled = true; // Max quality shadows
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            // renderer.toneMapping = THREE.ACESFilmicToneMapping; // Optional: Tone mapping for better color handling with bloom
+            // renderer.toneMappingExposure = 1.0;
+            document.body.appendChild(renderer.domElement);
 
-        // --- 遊戲主要循環 ---
-        let gameLoopInterval;
+            // --- Brighter Lighting ---
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.4); // Brighter ambient base
+            scene.add(ambientLight);
 
-        function gameLoop() {
-            if (isGameOver) return;
+            const directionalLight = new THREE.DirectionalLight(0xffccaa, 1.0); // Brighter directional
+            directionalLight.position.set(5, 10, 7);
+            directionalLight.castShadow = true;
+            // --- Max Quality: Higher Shadow Res ---
+            directionalLight.shadow.mapSize.width = 1024; // Increased shadow resolution
+            directionalLight.shadow.mapSize.height = 1024;
+            directionalLight.shadow.camera.near = 0.5;
+            directionalLight.shadow.camera.far = 50;
+            directionalLight.shadow.camera.left = -25;
+            directionalLight.shadow.camera.right = 15;
+            directionalLight.shadow.camera.top = 20;
+            directionalLight.shadow.camera.bottom = -20;
+            scene.add(directionalLight);
 
-            // 更新恐龍位置 (重力與跳躍)
-            updateDino();
 
-            // 移動和生成障礙物
-            updateObstacles();
+            // --- Ground ---
+            const groundGeometry = new THREE.PlaneGeometry(100, 100);
+            const groundMaterial = new THREE.MeshStandardMaterial({
+                color: 0x1a1a1a, roughness: 0.8, metalness: 0.1, side: THREE.DoubleSide });
+            ground = new THREE.Mesh(groundGeometry, groundMaterial);
+            ground.rotation.x = -Math.PI / 2;
+            ground.receiveShadow = true;
+            scene.add(ground);
 
-            // 檢查碰撞
-            checkCollisions();
+            // --- Player ---
+            const playerGeometry = new THREE.BoxGeometry(playerSize, playerSize, playerSize);
+            const playerMaterial = new THREE.MeshStandardMaterial({
+                 color: 0xdddddd, // Lighter color for player cube
+                 roughness: 0.5,
+                 // emissive: 0xffffff, // Optional: Make material itself slightly emissive white
+                 // emissiveIntensity: 0.1
+                 });
+            player = new THREE.Mesh(playerGeometry, playerMaterial);
+            player.position.set(playerXPosition, playerSize / 2, 0);
+            player.castShadow = true;
+            scene.add(player);
+            player.userData.boundingBox = new THREE.Box3();
 
-            // 更新分數
-            updateScore();
+             // --- Player Glow Light ---
+            playerLight = new THREE.PointLight(0xffffff, 1.5, 5); // White light, Intensity, Distance
+            playerLight.position.set(0, 0.5, 0); // Position relative to player center
+            player.add(playerLight); // Attach light to player
 
-            requestAnimationFrame(gameLoop); // 使用 requestAnimationFrame 實現流暢動畫
+            // --- Fire Particles ---
+            createFireParticles();
+
+            // --- Post Processing Setup ---
+            composer = new EffectComposer(renderer);
+            const renderPass = new RenderPass(scene, camera);
+            composer.addPass(renderPass);
+
+            const bloomPass = new UnrealBloomPass(
+                new THREE.Vector2(window.innerWidth, window.innerHeight),
+                bloomParams.strength,
+                bloomParams.radius,
+                bloomParams.threshold
+            );
+            composer.addPass(bloomPass);
+
+            // --- Event Listeners & Start ---
+            window.addEventListener('resize', onWindowResize, false);
+            setupInputListeners();
+            showStartMessage();
         }
 
-        // --- 更新函式 ---
-        function updateDino() {
-            dinoVelocityY += gravity;
-            dinoY += dinoVelocityY;
+        // --- Create Fire Particle System ---
+        function createFireParticles() {
+            // ... (particle creation logic remains the same) ...
+            const geometry = new THREE.BufferGeometry();
+            const positions = [];
+            const colors = [];
+            const color = new THREE.Color();
 
-            // 確保恐龍不掉到地面以下
-            if (dinoY > 0) {
-                dinoY = 0;
-                dinoVelocityY = 0;
+            for (let i = 0; i < particleCount; i++) {
+                const x = THREE.MathUtils.randFloatSpread(particleSpread.x);
+                const y = particleBaseY + THREE.MathUtils.randFloatSpread(particleSpread.y);
+                const z = THREE.MathUtils.randFloatSpread(particleSpread.z) - particleSpread.z / 3;
+                positions.push(x, y, z);
+                color.setHSL(THREE.MathUtils.randFloat(0.0, 0.1), 1.0, THREE.MathUtils.randFloat(0.5, 0.8));
+                colors.push(color.r, color.g, color.b);
+            }
+            geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+            geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+            const material = new THREE.PointsMaterial({
+                size: 0.18, // Slightly larger particles maybe
+                vertexColors: true,
+                blending: THREE.AdditiveBlending,
+                transparent: true,
+                depthWrite: false
+            });
+            fireParticles = new THREE.Points(geometry, material);
+            scene.add(fireParticles);
+        }
+
+        // --- Game Loop (Uses Composer) ---
+        function animate() {
+            animationFrameId = requestAnimationFrame(animate);
+            if (!gameRunning || isGameOver) return;
+            const delta = 1; // Simplified delta
+
+            updatePlayer(delta);
+            updateObstacles(delta);
+            updateFireParticles(delta);
+            checkCollisions();
+            updateScoreAndSpeed();
+
+            // --- Render using Composer ---
+            // renderer.render(scene, camera); // Don't use direct renderer
+            composer.render(); // Use composer for post-processing effects
+        }
+
+        // --- Update Player ---
+        function updatePlayer(delta) {
+            // ... (logic remains the same) ...
+             playerVelocityY += gravity * delta;
+            let nextY = player.position.y - playerVelocityY;
+            const groundY = playerSize / 2;
+            if (nextY <= groundY) {
+                nextY = groundY;
+                playerVelocityY = 0;
                 isJumping = false;
             }
-
-            dino.style.bottom = -dinoY + 'px'; // Y 座標是向下的，所以用負值
+            player.position.y = nextY;
+            player.userData.boundingBox.setFromObject(player);
+            // Note: playerLight is parented, so it moves automatically
         }
 
-        function updateObstacles() {
-            // 生成新的障礙物
-            obstacleTimer--;
+         // --- Update Fire Particles Animation ---
+        function updateFireParticles(delta) {
+            // ... (logic remains the same) ...
+             if (!fireParticles) return;
+            const positions = fireParticles.geometry.attributes.position.array;
+            const particleEndY = particleBaseY + particleSpread.y * 1.5;
+            for (let i = 0; i < particleCount; i++) {
+                const i3 = i * 3;
+                positions[i3 + 1] += particleRiseSpeed * delta * (Math.random() * 0.5 + 0.5) ;
+                if (positions[i3 + 1] > particleEndY) {
+                    positions[i3 + 1] = particleBaseY + Math.random() * 5;
+                }
+            }
+            fireParticles.geometry.attributes.position.needsUpdate = true;
+        }
+
+        // --- Update Obstacles ---
+        function updateObstacles(delta) {
+            // ... (logic remains the same) ...
+            obstacleTimer -= delta;
             if (obstacleTimer <= 0) {
                 spawnObstacle();
-                // 隨機設定下一個障礙物的生成時間，隨著遊戲速度加快，間隔會縮短
-                let intervalReduction = Math.floor(score / 500); // 每500分減少一點間隔
-                let currentMinInterval = Math.max(30, minObstacleInterval - intervalReduction * 5);
-                let currentMaxInterval = Math.max(60, maxObstacleInterval - intervalReduction * 10);
+                let scoreFactor = Math.floor(score / (500 * intervalMultiplier));
+                let currentMinInterval = Math.max(30 * intervalMultiplier, (minObstacleInterval * intervalMultiplier) - scoreFactor * 5);
+                let currentMaxInterval = Math.max(70 * intervalMultiplier, (maxObstacleInterval * intervalMultiplier) - scoreFactor * 10);
                 obstacleTimer = Math.floor(Math.random() * (currentMaxInterval - currentMinInterval + 1)) + currentMinInterval;
             }
-
-            // 移動現有障礙物並移除螢幕外的
             for (let i = obstacles.length - 1; i >= 0; i--) {
                 const obstacle = obstacles[i];
-                obstacle.x -= gameSpeed;
-                obstacle.element.style.left = obstacle.x + 'px';
-
-                if (obstacle.x + obstacle.width < 0) {
-                    // 障礙物移出螢幕左側
-                    gameContainer.removeChild(obstacle.element);
+                obstacle.position.z -= gameSpeed * delta * 10;
+                obstacle.userData.boundingBox.setFromObject(obstacle);
+                if (obstacle.position.z < obstacleEndZ) {
+                    scene.remove(obstacle);
                     obstacles.splice(i, 1);
                 }
             }
         }
 
+        // --- Spawn Obstacle (Intense Lava Glow) ---
         function spawnObstacle() {
-            const obstacleElement = document.createElement('div');
-            obstacleElement.classList.add('obstacle');
+            const obstacleHeight = Math.random() * 2.5 + 1;
+            const obstacleWidth = Math.random() * 0.5 + 0.8;
+            const obstacleDepth = Math.random() * 0.5 + 0.8;
 
-            // 隨機高度 (簡單一點，只用一種高度)
-            const obstacleHeight = Math.random() < 0.7 ? 40 : 55; // 70%機率是矮的
-            const obstacleWidth = 20;
-            obstacleElement.style.height = obstacleHeight + 'px';
-            obstacleElement.style.width = obstacleWidth + 'px';
+            const geometry = new THREE.BoxGeometry(obstacleWidth, obstacleHeight, obstacleDepth);
+            // --- Intense Lava Glow ---
+            const material = new THREE.MeshStandardMaterial({
+                color: 0xff6600, // Bright orange
+                emissive: 0xff3300, // Strong red/orange emissive
+                emissiveIntensity: 3.5, // <<< MUCH Higher Intensity for strong glow with bloom
+                roughness: 0.7,
+                metalness: 0.0
+             });
+            const obstacle = new THREE.Mesh(geometry, material);
 
-            const obstacle = {
-                element: obstacleElement,
-                x: gameWidth, // 從右邊界外開始
-                y: 0, // 底部對齊
-                width: obstacleWidth,
-                height: obstacleHeight
-            };
+            obstacle.position.set(playerXPosition, obstacleHeight / 2, obstacleSpawnZ);
+            obstacle.castShadow = true; // Still cast shadow
+            obstacle.receiveShadow = false;
+            obstacle.userData.boundingBox = new THREE.Box3();
+            obstacle.userData.boundingBox.setFromObject(obstacle);
 
             obstacles.push(obstacle);
-            gameContainer.appendChild(obstacleElement);
+            scene.add(obstacle);
         }
 
-        function updateScore() {
-            score++;
-            scoreDisplay.textContent = '分數: ' + Math.floor(score / 5); // 讓分數增加慢一點
-
-            // 稍微增加遊戲速度
-            if (score % 100 === 0) { // 每得500分(顯示分數100) 加速一次
-                gameSpeed += 0.2;
-                console.log("加速! 目前速度:", gameSpeed.toFixed(1));
-            }
-        }
-
-        // --- 碰撞檢測 ---
-        function checkCollisions() {
-            const dinoRect = dino.getBoundingClientRect();
-            // 稍微縮小恐龍的碰撞框，讓遊戲感覺不那麼嚴苛
-            const dinoHitbox = {
-                left: dinoRect.left + 5,
-                right: dinoRect.right - 5,
-                top: dinoRect.top + 5,
-                bottom: dinoRect.bottom
-            };
-
-
-            for (const obstacle of obstacles) {
-                const obstacleRect = obstacle.element.getBoundingClientRect();
-                const obstacleHitbox = {
-                    left: obstacleRect.left + 2,
-                    right: obstacleRect.right - 2,
-                    top: obstacleRect.top,
-                    bottom: obstacleRect.bottom - 5 // 讓矮的仙人掌更容易跳過
-                };
-
-
-                // 簡單的 AABB 碰撞檢測
-                if (
-                    dinoHitbox.left < obstacleHitbox.right &&
-                    dinoHitbox.right > obstacleHitbox.left &&
-                    dinoHitbox.top < obstacleHitbox.bottom &&
-                    dinoHitbox.bottom > obstacleHitbox.top
-                ) {
-                    // 碰撞發生！
-                    gameOver();
-                    return; // 不需要再檢查其他障礙物
+        // --- Update Score & Speed ---
+         function updateScoreAndSpeed() {
+             // ... (logic remains the same) ...
+              if (!isGameOver) {
+                score++;
+                scoreDisplay.textContent = '分數: ' + Math.floor(score / 10);
+                if (gameSpeed < maxGameSpeed) {
+                    gameSpeed += gameSpeedAcceleration;
                 }
             }
         }
 
-        // --- 遊戲狀態 ---
-        function gameOver() {
-            isGameOver = true;
-            gameOverDisplay.style.display = 'block';
-            // 可以在這裡停止遊戲循環，但 requestAnimationFrame 會自動停止（因為我們在循環開頭檢查 isGameOver）
-            // 如果使用 setInterval，需要 clearInterval(gameLoopInterval);
-            console.log("遊戲結束! 最終分數:", Math.floor(score / 5));
+        // --- Collision Detection ---
+        function checkCollisions() {
+             // ... (logic remains the same) ...
+            const playerBox = player.userData.boundingBox;
+            const playerHitbox = playerBox.clone().expandByScalar(-0.1);
+            for (const obstacle of obstacles) {
+                const obstacleBox = obstacle.userData.boundingBox;
+                const obstacleHitbox = obstacleBox.clone().expandByScalar(-0.05);
+                if (playerHitbox.intersectsBox(obstacleHitbox)) {
+                    gameOver();
+                    return;
+                }
+            }
         }
 
+        // --- Game Over ---
+        function gameOver() {
+             // ... (logic remains the same) ...
+            isGameOver = true;
+            gameRunning = false;
+            gameOverDisplay.style.display = 'block';
+            gameOverDisplay.innerHTML = `遊戲結束<br>最終分數: ${Math.floor(score / 10)}<br><small>(按空白鍵或點擊重新開始)</small>`;
+            console.log("遊戲結束! 最終分數:", Math.floor(score / 10));
+        }
+
+        // --- Reset Game ---
         function resetGame() {
-            // 清除舊的障礙物
-            obstacles.forEach(obstacle => gameContainer.removeChild(obstacle.element));
+             // ... (logic remains the same) ...
+            obstacles.forEach(obstacle => scene.remove(obstacle));
             obstacles = [];
-
-            // 重設變數
-            dinoY = 0;
-            dinoVelocityY = 0;
+            player.position.set(playerXPosition, playerSize / 2, 0);
+            playerVelocityY = 0;
             isJumping = false;
-            isGameOver = false;
             score = 0;
-            gameSpeed = 5; // 重設初始速度
-            obstacleTimer = maxObstacleInterval; // 立即準備生成第一個
-
-            // 更新顯示
-            dino.style.bottom = '0px';
+            gameSpeed = initialGameSpeed;
+            obstacleTimer = Math.floor(Math.random() * ((maxObstacleInterval * intervalMultiplier) - (minObstacleInterval * intervalMultiplier) + 1)) + (minObstacleInterval * intervalMultiplier);
+            isGameOver = false;
+            gameRunning = true;
             scoreDisplay.textContent = '分數: 0';
             gameOverDisplay.style.display = 'none';
-
-            // 重新開始遊戲循環
-            gameLoop();
+             if (!animationFrameId) { animate(); }
         }
 
-        // --- 輸入處理 ---
+        // --- Show Start Message ---
+         function showStartMessage() {
+             // ... (logic remains the same) ...
+            gameOverDisplay.innerHTML = "按空白鍵或點擊開始";
+            gameOverDisplay.style.display = 'block';
+            isGameOver = true;
+            gameRunning = false;
+        }
+
+        // --- Handle Input ---
         function handleInput() {
+             // ... (logic remains the same) ...
             if (isGameOver) {
                 resetGame();
-            } else if (!isJumping) {
-                dinoVelocityY = -jumpStrength; // 向上跳
+            } else if (gameRunning && !isJumping) {
+                playerVelocityY = -jumpStrength;
                 isJumping = true;
             }
         }
 
-        // 監聽鍵盤事件 (空白鍵)
-        document.addEventListener('keydown', (event) => {
-            if (event.code === 'Space') {
-                event.preventDefault(); // 防止按空白鍵時頁面滾動
-                handleInput();
-            }
-        });
+        // --- Setup Input Listeners ---
+        function setupInputListeners() {
+             // ... (logic remains the same) ...
+            document.addEventListener('keydown', (event) => { if (event.code === 'Space') { event.preventDefault(); handleInput(); } });
+            renderer.domElement.addEventListener('mousedown', (event) => { event.preventDefault(); handleInput(); }, false);
+            renderer.domElement.addEventListener('touchstart', (event) => { event.preventDefault(); handleInput(); }, { passive: false });
+        }
 
-        // 監聽觸控和滑鼠點擊事件
-        gameContainer.addEventListener('touchstart', (event) => {
-            event.preventDefault(); // 防止觸控相關的預設行為
-            handleInput();
-        });
-        gameContainer.addEventListener('mousedown', (event) => {
-            // 只響應主按鈕（通常是左鍵）
-            if (event.button === 0) {
-                event.preventDefault();
-                handleInput();
-            }
-        });
+        // --- Window Resize (Update Composer) ---
+        function onWindowResize() {
+            const width = window.innerWidth;
+            const height = window.innerHeight;
 
-        // --- 初始設定 ---
-        // 顯示提示開始
-        gameOverDisplay.innerHTML = "按空白鍵或點擊開始";
-        gameOverDisplay.style.display = 'block';
-        isGameOver = true; // 初始設為結束狀態，等待第一次輸入來開始
+            camera.aspect = width / height;
+            camera.updateProjectionMatrix();
 
-        // 注意：遊戲循環 (gameLoop) 會在第一次有效輸入 (handleInput -> resetGame) 後才真正開始運行
+            renderer.setSize(width, height);
+             // --- Max Quality: Update Pixel Ratio on Resize ---
+            renderer.setPixelRatio(window.devicePixelRatio || 1);
+
+            // --- Update Composer Size ---
+            composer.setSize(width, height);
+        }
+
+        // --- Start Game ---
+        init();
+        animate();
 
     </script>
 </body>
