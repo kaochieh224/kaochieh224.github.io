@@ -1,1 +1,412 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>3D 恐龍跑酷遊戲</title> <!-- 更改為通用標題 -->
 
+    <!--
+        遊戲部署說明：
+
+        這個遊戲是一個單一的 index.html 文件，可以直接部署到支援靜態檔案的託管服務上。
+        以下是一些免費且流行的選項：
+
+        1. GitHub Pages:
+           - 將此文件命名為 index.html。
+           - 在 GitHub 上創建一個新的公開 Repository。
+           - 將 index.html 上傳到該 Repository 的主分支 (main/master)。
+           - 在 Repository 的 Settings -> Pages 中，選擇從你的主分支部署。
+           - 幾分鐘後，你的遊戲將在 https://<你的使用者名稱>.github.io/<Repository名稱>/ 上線。
+
+        2. Netlify:
+           - 註冊並登入 Netlify。
+           - 將這個 index.html 文件直接拖放到 Netlify 網站的部署區域。
+           - Netlify 會自動部署並提供一個網址。
+
+        3. Vercel / Cloudflare Pages:
+           - 類似 Netlify，可以連接 GitHub Repository 或直接上傳/部署。
+
+        本地測試提醒：
+        由於使用了 <script type="module">，直接雙擊打開此 HTML 文件可能無法正常加載 Three.js。
+        請使用本地伺服器（如 Python 的 http.server）來進行本地測試。
+    -->
+
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #f0f0f0; }
+        canvas { display: block; }
+        #info-overlay {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: #333;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 18px;
+            background-color: rgba(255, 255, 255, 0.7);
+            padding: 5px 10px;
+            border-radius: 5px;
+            z-index: 10;
+        }
+        #game-over {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 24px;
+            color: #333;
+            background-color: rgba(255, 255, 255, 0.8);
+            padding: 20px;
+            border-radius: 10px;
+            display: none;
+            text-align: center;
+            white-space: nowrap;
+            z-index: 10;
+        }
+        body, #info-overlay, #game-over {
+            user-select: none;
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+        }
+         canvas {
+             touch-action: manipulation;
+         }
+    </style>
+</head>
+<body>
+    <div id="info-overlay">
+        <div id="score">分數: 0</div>
+    </div>
+    <div id="game-over">遊戲結束<br><small>(按空白鍵或點擊重新開始)</small></div>
+
+    <!-- Three.js Import Map - 從 CDN 加載 -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <!-- 遊戲主邏輯 -->
+    <script type="module">
+        import * as THREE from 'three';
+
+        // --- 核心遊戲變數 ---
+        let scene, camera, renderer;
+        let player, ground;
+        let obstacles = [];
+        let score = 0;
+        let animationFrameId = null; // 用於管理動畫幀
+
+        // --- 遊戲參數設定 ---
+        const speedMultiplier = 0.05; // 速度倍率 (相對於原始設計)
+        let initialGameSpeed = 0.1 * speedMultiplier;
+        let maxGameSpeed = 0.3 * speedMultiplier;
+        let gameSpeedAcceleration = 0.0001 * speedMultiplier;
+        let gameSpeed = initialGameSpeed;
+
+        const playerSize = 1;
+        let playerVelocityY = 0;
+        const gravity = 0.012; // 較小的重力以增加滯空時間
+        const jumpStrength = 0.5; // 跳躍起始力度
+        let isJumping = false;
+        const playerXPosition = -5; // 玩家在X軸固定位置
+
+        let isGameOver = true; // 初始為結束狀態
+        let gameRunning = false; // 遊戲是否正在運行邏輯
+
+        let intervalMultiplier = 2.5; // 障礙物生成間隔倍數 (可調整)
+        let obstacleTimer = 0;
+        let minObstacleInterval = 60; // 基礎最小間隔 (幀)
+        let maxObstacleInterval = 150; // 基礎最大間隔 (幀)
+        const obstacleSpawnZ = 30; // 障礙物生成的 Z 軸位置
+        const obstacleEndZ = -15; // 障礙物消失的 Z 軸位置
+
+        // --- DOM 元素引用 ---
+        const scoreDisplay = document.getElementById('score');
+        const gameOverDisplay = document.getElementById('game-over');
+
+        // --- 初始化 Three.js 環境 ---
+        function init() {
+            // 場景
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87CEEB); // 天藍色
+            scene.fog = new THREE.Fog(scene.background, 15, 50); // 霧效
+
+            // 相機
+            const aspect = window.innerWidth / window.innerHeight;
+            camera = new THREE.PerspectiveCamera(60, aspect, 0.1, 100);
+            camera.position.set(playerXPosition + 3, 5, 10); // 45度後上方視角
+            camera.lookAt(playerXPosition, 0, 0); // 視線焦點
+
+            // 渲染器
+            renderer = new THREE.WebGLRenderer({ antialias: true }); // 開啟抗鋸齒 (手機性能若不足可設為 false)
+            renderer.setSize(window.innerWidth, window.innerHeight);
+
+            // 手機性能優化：限制設備像素比
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+
+            renderer.shadowMap.enabled = true; // 開啟陰影 (手機性能若不足可設為 false)
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap; // 柔和陰影
+            document.body.appendChild(renderer.domElement); // 將畫布添加到網頁
+
+            // 光源
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6); // 環境光
+            scene.add(ambientLight);
+
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8); // 平行光 (模擬太陽)
+            directionalLight.position.set(5, 10, 7);
+            directionalLight.castShadow = true;
+            // 陰影貼圖大小 (手機性能若不足可降低)
+            directionalLight.shadow.mapSize.width = 512;
+            directionalLight.shadow.mapSize.height = 512;
+            directionalLight.shadow.camera.near = 0.5;
+            directionalLight.shadow.camera.far = 50;
+            directionalLight.shadow.camera.left = -20;
+            directionalLight.shadow.camera.right = 20;
+            directionalLight.shadow.camera.top = 20;
+            directionalLight.shadow.camera.bottom = -20;
+            scene.add(directionalLight);
+            scene.add(directionalLight.target); // 需要添加目標以使陰影正常工作
+
+            // 地面
+            const groundGeometry = new THREE.PlaneGeometry(100, 100);
+            const groundMaterial = new THREE.MeshStandardMaterial({ color: 0x99CC99, side: THREE.DoubleSide }); // 綠色
+            ground = new THREE.Mesh(groundGeometry, groundMaterial);
+            ground.rotation.x = -Math.PI / 2; // 旋轉使其平放
+            ground.receiveShadow = true; // 接收陰影
+            scene.add(ground);
+
+            // 玩家 (方塊)
+            const playerGeometry = new THREE.BoxGeometry(playerSize, playerSize, playerSize);
+            const playerMaterial = new THREE.MeshStandardMaterial({ color: 0xCC6666 }); // 紅棕色
+            player = new THREE.Mesh(playerGeometry, playerMaterial);
+            player.position.set(playerXPosition, playerSize / 2, 0); // 初始位置置於地面上
+            player.castShadow = true; // 投射陰影
+            scene.add(player);
+            player.userData.boundingBox = new THREE.Box3(); // 初始化碰撞盒
+
+            // 設置事件監聽器
+            window.addEventListener('resize', onWindowResize, false);
+            setupInputListeners();
+
+            // 顯示開始提示
+            showStartMessage();
+        }
+
+        // --- 遊戲主循環 ---
+        function animate() {
+            animationFrameId = requestAnimationFrame(animate); // 請求下一幀
+
+            // 只有在遊戲運行且未結束時才更新邏輯
+            if (!gameRunning || isGameOver) return;
+
+            // 使用固定 delta (1) 簡化處理，假設幀率穩定
+            // 若需更精確物理，可使用 THREE.Clock().getDelta()
+            const delta = 1;
+
+            // 更新遊戲元素
+            updatePlayer(delta);
+            updateObstacles(delta);
+
+            // 檢查碰撞
+            checkCollisions();
+
+            // 更新分數和速度
+            updateScoreAndSpeed();
+
+            // 渲染場景
+            renderer.render(scene, camera);
+        }
+
+        // --- 更新玩家位置 (跳躍與重力) ---
+        function updatePlayer(delta) {
+            playerVelocityY += gravity * delta; // 重力影響垂直速度
+            let nextY = player.position.y - playerVelocityY; // 計算下一幀Y位置
+
+            const groundY = playerSize / 2; // 地面高度
+            if (nextY <= groundY) { // 碰撞或穿過地面
+                nextY = groundY; // 拉回地面
+                playerVelocityY = 0; // 停止垂直運動
+                isJumping = false; // 可以再次跳躍
+            }
+            player.position.y = nextY; // 更新玩家位置
+            player.userData.boundingBox.setFromObject(player); // 更新碰撞盒位置
+        }
+
+        // --- 更新障礙物 (移動、生成、移除) ---
+        function updateObstacles(delta) {
+            // 判斷是否生成新障礙物
+            obstacleTimer -= delta;
+            if (obstacleTimer <= 0) {
+                spawnObstacle();
+                // 重設計時器，使用較長間隔且隨分數稍微縮短
+                let scoreFactor = Math.floor(score / (500 * intervalMultiplier));
+                let currentMinInterval = Math.max(30 * intervalMultiplier, (minObstacleInterval * intervalMultiplier) - scoreFactor * 5);
+                let currentMaxInterval = Math.max(70 * intervalMultiplier, (maxObstacleInterval * intervalMultiplier) - scoreFactor * 10);
+                obstacleTimer = Math.floor(Math.random() * (currentMaxInterval - currentMinInterval + 1)) + currentMinInterval;
+            }
+
+            // 移動現有障礙物
+            for (let i = obstacles.length - 1; i >= 0; i--) {
+                const obstacle = obstacles[i];
+                obstacle.position.z -= gameSpeed * delta * 10; // 沿Z軸移動 (乘以10調整體感速度)
+                obstacle.userData.boundingBox.setFromObject(obstacle); // 更新碰撞盒
+
+                // 移除超出畫面範圍的障礙物
+                if (obstacle.position.z < obstacleEndZ) {
+                    scene.remove(obstacle); // 從場景移除
+                    obstacles.splice(i, 1); // 從陣列移除
+                }
+            }
+        }
+
+        // --- 生成一個新的障礙物 ---
+        function spawnObstacle() {
+            // 隨機高度和固定寬深
+            const obstacleHeight = Math.random() * 1.5 + 1; // 1 到 2.5 之間
+            const obstacleWidth = 1;
+            const obstacleDepth = 1;
+
+            const geometry = new THREE.BoxGeometry(obstacleWidth, obstacleHeight, obstacleDepth);
+            const material = new THREE.MeshStandardMaterial({ color: 0x669966 }); // 深綠色
+            const obstacle = new THREE.Mesh(geometry, material);
+
+            obstacle.position.set(
+                playerXPosition,    // 與玩家同 X 軸
+                obstacleHeight / 2, // 置於地面上
+                obstacleSpawnZ      // 在遠處生成
+            );
+            obstacle.castShadow = true;
+            obstacle.receiveShadow = true;
+            obstacle.userData.boundingBox = new THREE.Box3();
+            obstacle.userData.boundingBox.setFromObject(obstacle); // 初始化碰撞盒
+
+            obstacles.push(obstacle); // 加入管理陣列
+            scene.add(obstacle); // 加入場景
+        }
+
+        // --- 更新分數和遊戲速度 ---
+         function updateScoreAndSpeed() {
+            if (!isGameOver) {
+                score++;
+                scoreDisplay.textContent = '分數: ' + Math.floor(score / 10); // 每10分顯示1分
+
+                // 緩慢增加遊戲速度直到上限
+                if (gameSpeed < maxGameSpeed) {
+                    gameSpeed += gameSpeedAcceleration;
+                }
+            }
+        }
+
+        // --- 碰撞檢測 ---
+        function checkCollisions() {
+            const playerBox = player.userData.boundingBox;
+            // 微調碰撞盒以改善遊戲體驗
+            const playerHitbox = playerBox.clone().expandByScalar(-0.1);
+
+            for (const obstacle of obstacles) {
+                const obstacleBox = obstacle.userData.boundingBox;
+                const obstacleHitbox = obstacleBox.clone().expandByScalar(-0.05);
+
+                // 檢查調整後的碰撞盒是否相交
+                if (playerHitbox.intersectsBox(obstacleHitbox)) {
+                    gameOver(); // 碰撞，遊戲結束
+                    return; // 無需再檢查其他障礙物
+                }
+            }
+        }
+
+        // --- 遊戲結束處理 ---
+        function gameOver() {
+            isGameOver = true;
+            gameRunning = false; // 停止遊戲邏輯更新
+            gameOverDisplay.style.display = 'block'; // 顯示結束畫面
+            gameOverDisplay.innerHTML = `遊戲結束<br>最終分數: ${Math.floor(score / 10)}<br><small>(按空白鍵或點擊重新開始)</small>`;
+            console.log("遊戲結束! 最終分數:", Math.floor(score / 10));
+        }
+
+        // --- 重設遊戲狀態以重新開始 ---
+        function resetGame() {
+            // 清理舊障礙物
+            obstacles.forEach(obstacle => scene.remove(obstacle));
+            obstacles = [];
+
+            // 重設玩家
+            player.position.set(playerXPosition, playerSize / 2, 0);
+            playerVelocityY = 0;
+            isJumping = false;
+
+            // 重設遊戲變數
+            score = 0;
+            gameSpeed = initialGameSpeed;
+            // 重設第一個障礙物的計時器
+             obstacleTimer = Math.floor(Math.random() * ((maxObstacleInterval * intervalMultiplier) - (minObstacleInterval * intervalMultiplier) + 1)) + (minObstacleInterval * intervalMultiplier);
+            isGameOver = false;
+            gameRunning = true; // 標記遊戲邏輯開始運行
+
+            // 更新介面
+            scoreDisplay.textContent = '分數: 0';
+            gameOverDisplay.style.display = 'none'; // 隱藏結束畫面
+
+             // 確保動畫循環已啟動 (如果因故停止)
+             // if (!animationFrameId) { animate(); } // 通常 animate() 開頭的 requestAnimationFrame 會維持循環
+        }
+
+        // --- 顯示開始遊戲提示 ---
+         function showStartMessage() {
+            gameOverDisplay.innerHTML = "按空白鍵或點擊開始";
+            gameOverDisplay.style.display = 'block';
+            isGameOver = true;
+            gameRunning = false;
+        }
+
+        // --- 處理用戶輸入 (跳躍/開始) ---
+        function handleInput() {
+            if (isGameOver) { // 如果遊戲結束，則重新開始
+                resetGame();
+            } else if (gameRunning && !isJumping) { // 如果遊戲運行中且不在跳躍狀態，則跳躍
+                playerVelocityY = -jumpStrength; // 給予向上的初始速度 (負值)
+                isJumping = true;
+            }
+        }
+
+        // --- 設置輸入事件監聽器 ---
+        function setupInputListeners() {
+            // 鍵盤空白鍵
+            document.addEventListener('keydown', (event) => {
+                if (event.code === 'Space') {
+                    event.preventDefault(); // 防止頁面滾動
+                    handleInput();
+                }
+            });
+            // 滑鼠點擊 (監聽 canvas 元素)
+            renderer.domElement.addEventListener('mousedown', (event) => {
+                event.preventDefault();
+                handleInput();
+            }, false);
+            // 觸控 (監聽 canvas 元素)
+            renderer.domElement.addEventListener('touchstart', (event) => {
+                event.preventDefault(); // 防止觸控滾動和縮放
+                handleInput();
+            }, { passive: false }); // passive:false 允許 preventDefault
+        }
+
+        // --- 處理瀏覽器窗口大小變化 ---
+        function onWindowResize() {
+            // 更新相機視錐體長寬比
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            // 更新渲染器尺寸
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            // 像素比在 init 中設置一次即可，無需在此重設
+        }
+
+        // --- 遊戲啟動入口 ---
+        init(); // 初始化場景和設置
+        animate(); // 開始遊戲循環
+
+    </script>
+</body>
+</html>
