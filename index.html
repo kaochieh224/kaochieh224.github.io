@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>3D 熔岩地獄跑酷 - 清理路徑</title> <!-- Updated Title -->
+    <title>3D 熔岩地獄跑酷 - 稀疏煙霧</title> <!-- Updated Title -->
 
     <!-- Deployment notes remain the same -->
     <!-- ... -->
@@ -70,10 +70,10 @@
         const obstacleSpawnZ = 35; const obstacleEndZ = -15; const pathWidth = 3.5;
 
         // Visual parameters
-        const fireParticleCount = 5000; const fireParticleSpread = { x: 40, y: 25, z: 70 }; const fireParticleBaseY = -6; const fireParticleRiseSpeed = 0.05; const fireParticleSwayMagnitude = 0.8; const fireParticleSwayFrequency = 0.3;
-        // --- MODIFIED: Reduced lava pop particles ---
-        const lavaPopParticleCount = 800; // Reduced count
-        const lavaPopSpread = { x: 40, z: 80 }; const lavaPopParticleSize = 0.08;
+        // --- MODIFIED: Reduced fire particle count ---
+        const fireParticleCount = 1000; // Reduced from 5000 (20%)
+        const fireParticleSpread = { x: 40, y: 25, z: 70 }; const fireParticleBaseY = -6; const fireParticleRiseSpeed = 0.05; const fireParticleSwayMagnitude = 0.8; const fireParticleSwayFrequency = 0.3;
+        const lavaPopParticleCount = 800; const lavaPopSpread = { x: 40, z: 80 }; const lavaPopParticleSize = 0.08;
         const bloomParams = { threshold: 0.1, strength: 1.8, radius: 0.7 };
 
         // --- DOM Element Variables ---
@@ -108,7 +108,7 @@
             const brownMat = new THREE.MeshStandardMaterial({ color: 0xB88A5E, roughness: 0.6 }); const brownBlock = new THREE.Mesh(blockGeo, brownMat); brownBlock.position.y = playerBlockHeight / 2 + playerBlockHeight * 2; brownBlock.castShadow = true; brownBlock.receiveShadow = true; player.add(brownBlock);
             scene.add(player); player.userData.boundingBox = new THREE.Box3();
 
-            createFireParticles();
+            createFireParticles(); // Will now create fewer particles
             createLavaPopParticles();
 
             composer = new EffectComposer(renderer); const renderPass = new RenderPass(scene, camera); composer.addPass(renderPass); const bloomPass = new UnrealBloomPass( new THREE.Vector2(window.innerWidth, window.innerHeight), bloomParams.strength, bloomParams.radius, bloomParams.threshold ); composer.addPass(bloomPass);
@@ -118,63 +118,39 @@
             window.addEventListener('resize', onWindowResize, false); setupInputListeners(); showStartMessage();
         }
 
-        // --- Create Swaying Fire Particle System ---
+        // --- Create Swaying Fire Particle System (Using Reduced Count) ---
         function createFireParticles() {
-             const geometry = new THREE.BufferGeometry(); const positions = []; initialXPositions = []; const colors = []; const color = new THREE.Color(); for (let i = 0; i < fireParticleCount; i++) { const x = THREE.MathUtils.randFloatSpread(fireParticleSpread.x); const y = fireParticleBaseY + THREE.MathUtils.randFloatSpread(fireParticleSpread.y); const z = THREE.MathUtils.randFloatSpread(fireParticleSpread.z) - fireParticleSpread.z / 3; positions.push(x, y, z); initialXPositions.push(x); color.setHSL(THREE.MathUtils.randFloat(0.0, 0.1), 1.0, THREE.MathUtils.randFloat(0.5, 0.8)); colors.push(color.r, color.g, color.b); } geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3)); geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3)); const material = new THREE.PointsMaterial({ size: 0.15, vertexColors: true, blending: THREE.AdditiveBlending, transparent: true, depthWrite: false }); fireParticles = new THREE.Points(geometry, material); scene.add(fireParticles);
+             const geometry = new THREE.BufferGeometry();
+             const positions = []; initialXPositions = []; const colors = []; const color = new THREE.Color();
+             // Loop uses the reduced fireParticleCount
+             for (let i = 0; i < fireParticleCount; i++) {
+                 const x = THREE.MathUtils.randFloatSpread(fireParticleSpread.x);
+                 const y = fireParticleBaseY + THREE.MathUtils.randFloatSpread(fireParticleSpread.y);
+                 const z = THREE.MathUtils.randFloatSpread(fireParticleSpread.z) - fireParticleSpread.z / 3;
+                 positions.push(x, y, z);
+                 initialXPositions.push(x);
+                 color.setHSL(THREE.MathUtils.randFloat(0.0, 0.1), 1.0, THREE.MathUtils.randFloat(0.5, 0.8));
+                 colors.push(color.r, color.g, color.b);
+             }
+             geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+             geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+             const material = new THREE.PointsMaterial({ size: 0.15, vertexColors: true, blending: THREE.AdditiveBlending, transparent: true, depthWrite: false });
+
+              // Remove old particles if they exist (e.g., on reset) - Good practice here too
+             if (fireParticles) {
+                scene.remove(fireParticles);
+                fireParticles.geometry.dispose();
+                fireParticles.material.dispose();
+             }
+
+             fireParticles = new THREE.Points(geometry, material);
+             scene.add(fireParticles);
         }
 
-        // --- Create Lava Pop Particle System (Avoid Path) --- // <<< MODIFIED HERE
+        // --- Create Lava Pop Particle System (Avoid Path) ---
         function createLavaPopParticles() {
-            const geometry = new THREE.BufferGeometry();
-            const positions = [];
-            const colors = [];
-            const color = new THREE.Color();
-            const groundY = 0.05; // Slightly above the lava ground
-            const pathHalfWidth = pathWidth / 2;
-            const pathLeftEdge = playerXPosition - pathHalfWidth;
-            const pathRightEdge = playerXPosition + pathHalfWidth;
-
-            // Generate particles, skipping those on the path
-            let createdCount = 0;
-            for (let i = 0; createdCount < lavaPopParticleCount && i < lavaPopParticleCount * 2; i++) { // Loop a bit extra to try and reach the target count
-                 // Spread only on XZ plane
-                const x = THREE.MathUtils.randFloatSpread(lavaPopSpread.x);
-                const y = groundY;
-                const z = THREE.MathUtils.randFloatSpread(lavaPopSpread.z);
-
-                // --- Check if particle is ON the path ---
-                if (x > pathLeftEdge && x < pathRightEdge) {
-                    continue; // Skip this particle
-                }
-
-                // --- Particle is off the path, add it ---
-                positions.push(x, y, z);
-                color.setHSL(THREE.MathUtils.randFloat(0.08, 0.12), 1.0, 0.6); // Yellow/Orange
-                colors.push(color.r, color.g, color.b);
-                createdCount++;
-            }
-            console.log("Created Lava Pop Particles:", createdCount); // Log actual count
-
-            geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-            geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-
-            const material = new THREE.PointsMaterial({
-                size: lavaPopParticleSize,
-                vertexColors: true,
-                blending: THREE.AdditiveBlending,
-                transparent: true,
-                depthWrite: false
-            });
-
-            // Remove old particles if they exist (e.g., on reset)
-            if (lavaPopParticles) {
-                scene.remove(lavaPopParticles);
-                lavaPopParticles.geometry.dispose();
-                lavaPopParticles.material.dispose();
-            }
-
-            lavaPopParticles = new THREE.Points(geometry, material);
-            scene.add(lavaPopParticles);
+            // ... (logic remains the same, uses lavaPopParticleCount = 800) ...
+             const geometry = new THREE.BufferGeometry(); const positions = []; const colors = []; const color = new THREE.Color(); const groundY = 0.05; const pathHalfWidth = pathWidth / 2; const pathLeftEdge = playerXPosition - pathHalfWidth; const pathRightEdge = playerXPosition + pathHalfWidth; let createdCount = 0; for (let i = 0; createdCount < lavaPopParticleCount && i < lavaPopParticleCount * 2; i++) { const x = THREE.MathUtils.randFloatSpread(lavaPopSpread.x); const y = groundY; const z = THREE.MathUtils.randFloatSpread(lavaPopSpread.z); if (x > pathLeftEdge && x < pathRightEdge) { continue; } positions.push(x, y, z); color.setHSL(THREE.MathUtils.randFloat(0.08, 0.12), 1.0, 0.6); colors.push(color.r, color.g, color.b); createdCount++; } console.log("Created Lava Pop Particles:", createdCount); geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3)); geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3)); const material = new THREE.PointsMaterial({ size: lavaPopParticleSize, vertexColors: true, blending: THREE.AdditiveBlending, transparent: true, depthWrite: false }); if (lavaPopParticles) { scene.remove(lavaPopParticles); lavaPopParticles.geometry.dispose(); lavaPopParticles.material.dispose(); } lavaPopParticles = new THREE.Points(geometry, material); scene.add(lavaPopParticles);
         }
 
         // --- Game Loop ---
@@ -196,13 +172,29 @@
             playerVelocityY += gravity * delta; let nextY = player.position.y - playerVelocityY; const groundYLevel = 0; if (nextY <= groundYLevel) { nextY = groundYLevel; playerVelocityY = 0; isJumping = false; } player.position.y = nextY; player.userData.boundingBox.setFromObject(player, true);
         }
 
-        // --- Update Swaying Fire Particles Animation ---
+        // --- Update Swaying Fire Particles Animation (Using Reduced Count) ---
         function updateFireParticles(delta) {
-            if (!fireParticles) return; const positions = fireParticles.geometry.attributes.position.array; const particleEndY = fireParticleBaseY + fireParticleSpread.y * 1.5; const time = Date.now() * 0.001; for (let i = 0; i < fireParticleCount; i++) { const i3 = i * 3; if (!initialXPositions || initialXPositions.length <= i) continue; /* Safety check */ positions[i3 + 1] += fireParticleRiseSpeed * delta * (Math.random() * 0.4 + 0.8); const particleOffset = (i * 0.1) % (Math.PI * 2); positions[i3] = initialXPositions[i] + Math.sin(positions[i3 + 1] * fireParticleSwayFrequency + particleOffset) * fireParticleSwayMagnitude; if (positions[i3 + 1] > particleEndY) { positions[i3 + 1] = fireParticleBaseY + Math.random() * 5; positions[i3] = initialXPositions[i]; } } fireParticles.geometry.attributes.position.needsUpdate = true;
+            if (!fireParticles) return;
+            const positions = fireParticles.geometry.attributes.position.array;
+            const particleEndY = fireParticleBaseY + fireParticleSpread.y * 1.5;
+            const time = Date.now() * 0.001;
+            // Loop uses the reduced fireParticleCount
+            for (let i = 0; i < fireParticleCount; i++) {
+                const i3 = i * 3;
+                if (!initialXPositions || initialXPositions.length <= i) continue;
+                positions[i3 + 1] += fireParticleRiseSpeed * delta * (Math.random() * 0.4 + 0.8);
+                const particleOffset = (i * 0.1) % (Math.PI * 2);
+                positions[i3] = initialXPositions[i] + Math.sin(positions[i3 + 1] * fireParticleSwayFrequency + particleOffset) * fireParticleSwayMagnitude;
+                if (positions[i3 + 1] > particleEndY) {
+                    positions[i3 + 1] = fireParticleBaseY + Math.random() * 5;
+                    positions[i3] = initialXPositions[i];
+                }
+            }
+            fireParticles.geometry.attributes.position.needsUpdate = true;
         }
 
-        // --- Update Lava Pop Particles (Currently Static) ---
-        function updateLavaPopParticles(delta) { /* No updates needed yet */ }
+         // --- Update Lava Pop Particles (Currently Static) ---
+         function updateLavaPopParticles(delta) { /* No updates needed yet */ }
 
         // --- Update Obstacles ---
         function updateObstacles(delta) {
@@ -215,28 +207,11 @@
         }
 
         // --- Update Score Display Only ---
-        function updateScore() { if (!isGameOver) { score++; scoreDisplay.textContent = '分數: ' + Math.floor(score / 10); } }
+         function updateScore() { if (!isGameOver) { score++; scoreDisplay.textContent = '分數: ' + Math.floor(score / 10); } }
 
         // --- Collision Detection (Uses Player Group Box) ---
         function checkCollisions() {
-            // Need to make sure bounding box is updated *before* check
-            player.userData.boundingBox.setFromObject(player, true); // Update here just in case
-            const playerBox = player.userData.boundingBox;
-            if (!playerBox || playerBox.isEmpty()) return; // Safety check
-
-            const playerHitbox = playerBox.clone().expandByScalar(-0.1);
-            for (const obstacle of obstacles) {
-                // Ensure obstacle box is also updated
-                obstacle.userData.boundingBox.setFromObject(obstacle);
-                const obstacleBox = obstacle.userData.boundingBox;
-                 if (!obstacleBox || obstacleBox.isEmpty()) continue; // Safety check
-
-                const obstacleHitbox = obstacleBox.clone().expandByScalar(-0.05);
-                if (playerHitbox.intersectsBox(obstacleHitbox)) {
-                    gameOver();
-                    return;
-                }
-            }
+            player.userData.boundingBox.setFromObject(player, true); const playerBox = player.userData.boundingBox; if (!playerBox || playerBox.isEmpty()) return; const playerHitbox = playerBox.clone().expandByScalar(-0.1); for (const obstacle of obstacles) { obstacle.userData.boundingBox.setFromObject(obstacle); const obstacleBox = obstacle.userData.boundingBox; if (!obstacleBox || obstacleBox.isEmpty()) continue; const obstacleHitbox = obstacleBox.clone().expandByScalar(-0.05); if (playerHitbox.intersectsBox(obstacleHitbox)) { gameOver(); return; } }
         }
 
         // --- Game Over ---
@@ -244,32 +219,11 @@
 
         // --- Reset Game ---
         function resetGame() {
-            const selectedLevel = parseInt(difficultySelect.value, 10);
-            setParametersForDifficulty(selectedLevel);
-
-            difficultyContainer.style.display = 'none';
-            gameOverDisplay.style.display = 'none';
-
-            obstacles.forEach(obstacle => scene.remove(obstacle)); obstacles = [];
-            player.position.set(playerXPosition, 0, 0); playerVelocityY = 0; isJumping = false;
-            score = 0;
-
-            currentGameSpeed = initialGameSpeed;
-            currentMinObstacleInterval = initialMinObstacleInterval;
-            currentMaxObstacleInterval = initialMaxObstacleInterval;
-            currentSpeedModifier = 1.0;
-            speedVariationActiveTimer = 0;
-            speedVariationTimer = speedVariationCheckInterval;
-
-            obstacleTimer = Math.floor(Math.random() * (currentMaxObstacleInterval - currentMinObstacleInterval + 1)) + currentMinObstacleInterval;
-
-            // --- Recreate lava pop particles on reset ---
-            createLavaPopParticles();
-
-            isGameOver = false; gameRunning = true;
-            scoreDisplay.textContent = '分數: 0';
-
-             if (!animationFrameId) { animate(); }
+             const selectedLevel = parseInt(difficultySelect.value, 10); setParametersForDifficulty(selectedLevel); difficultyContainer.style.display = 'none'; gameOverDisplay.style.display = 'none'; obstacles.forEach(obstacle => scene.remove(obstacle)); obstacles = []; player.position.set(playerXPosition, 0, 0); playerVelocityY = 0; isJumping = false; score = 0; currentGameSpeed = initialGameSpeed; currentMinObstacleInterval = initialMinObstacleInterval; currentMaxObstacleInterval = initialMaxObstacleInterval; currentSpeedModifier = 1.0; speedVariationActiveTimer = 0; speedVariationTimer = speedVariationCheckInterval; obstacleTimer = Math.floor(Math.random() * (currentMaxObstacleInterval - currentMinObstacleInterval + 1)) + currentMinObstacleInterval;
+             // Recreate particles on reset (important if counts change or need refreshing)
+             createFireParticles();
+             createLavaPopParticles();
+             isGameOver = false; gameRunning = true; scoreDisplay.textContent = '分數: 0'; if (!animationFrameId) { animate(); }
         }
 
         // --- Show Start Message ---
